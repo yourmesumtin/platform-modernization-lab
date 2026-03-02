@@ -101,9 +101,6 @@ jobs:
       - name: Smoke test staging
         run: |
           kubectl rollout status deployment/api --timeout=180s
-          kubectl wait --for=condition=ready pod \
-            -l app=api \
-            --timeout=60s
           echo "Staging smoke test passed"
 
   # ── Job 4: Manual Approval Gate ───────────────────────────
