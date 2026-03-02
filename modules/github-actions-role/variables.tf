@@ -21,3 +21,15 @@ variable "tags" {
   type    = map(string)
   default = {}
 }
+
+variable "create_oidc_provider" {
+  description = "Set to true only in the first environment that creates it"
+  type        = bool
+  default     = false
+}
+
+variable "existing_oidc_provider_arn" {
+  description = "ARN of existing OIDC provider when create_oidc_provider is false"
+  type        = string
+  default     = ""
+}

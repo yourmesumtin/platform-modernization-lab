@@ -68,6 +68,22 @@ module "github_actions_role" {
   github_org          = "yourmesumtin"
   github_repo         = "platform-modernization-lab"
   ecr_repository_arns = values(module.ecr.repository_arns)
+  create_oidc_provider = true    # ← staging owns it
+
+  tags = {
+    Project     = "platform-modernization-lab"
+    Environment = "staging"
+    ManagedBy   = "terraform"
+  }
+}
+
+module "monitoring" {
+  source = "../../modules/monitoring"
+
+  env                    = "staging"
+  eks_cluster_name       = module.eks.cluster_name
+  db_instance_identifier = "${var.env}-postgres"
+  alert_email            = var.alert_email
 
   tags = {
     Project     = "platform-modernization-lab"
