@@ -21,7 +21,7 @@ dependency "ecr" {
       frontend = "123456789012.dkr.ecr.us-east-2.amazonaws.com/frontend"
     }
   }
-  mock_outputs_allowed_terraform_commands = ["plan", "validate"]
+  mock_outputs_allowed_terraform_commands = ["init","plan", "validate"]
 }
 
 inputs = {

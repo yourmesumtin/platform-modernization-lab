@@ -13,7 +13,7 @@ dependency "eks" {
     cluster_name     = "production-eks-cluster"
     cluster_endpoint = "https://mock.eks.amazonaws.com"
   }
-  mock_outputs_allowed_terraform_commands = ["plan", "validate"]
+  mock_outputs_allowed_terraform_commands = ["init", "plan", "validate"]
 }
 
 inputs = {
