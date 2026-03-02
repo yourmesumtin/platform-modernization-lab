@@ -50,18 +50,36 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - uses: hashicorp/setup-terraform@v3
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
 
-      - name: Terraform Init
-        working-directory: live/staging
-        run: terraform init
+      - name: Setup Terragrunt
+        run: |
+          wget -q https://github.com/gruntwork-io/terragrunt/releases/download/v0.55.0/terragrunt_linux_amd64
+          chmod +x terragrunt_linux_amd64
+          sudo mv terragrunt_linux_amd64 /usr/local/bin/terragrunt
 
-      - name: Terraform Destroy
-        working-directory: live/staging
-        run: terraform destroy -auto-approve
+      - name: Terragrunt Destroy Staging
+        working-directory: terragrunt/staging
+        run: terragrunt run-all destroy --terragrunt-non-interactive
         env:
           TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
           TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
+
+    #   - uses: hashicorp/setup-terraform@v3
+
+    #   - name: Terraform Init
+    #     working-directory: live/staging
+    #     run: terraform init
+
+    #   - name: Terraform Destroy
+    #     working-directory: live/staging
+    #     run: terraform destroy -auto-approve
+    #     env:
+    #       TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+    #       TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
 
   destroy-production:
     name: Destroy Production
@@ -78,15 +96,33 @@ jobs:
           role-to-assume: ${{ secrets.PROD_AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - uses: hashicorp/setup-terraform@v3
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
 
-      - name: Terraform Init
-        working-directory: live/production
-        run: terraform init
+      - name: Setup Terragrunt
+        run: |
+          wget -q https://github.com/gruntwork-io/terragrunt/releases/download/v0.55.0/terragrunt_linux_amd64
+          chmod +x terragrunt_linux_amd64
+          sudo mv terragrunt_linux_amd64 /usr/local/bin/terragrunt
 
-      - name: Terraform Destroy
-        working-directory: live/production
-        run: terraform destroy -auto-approve
+      - name: Terragrunt Destroy Staging
+        working-directory: terragrunt/staging
+        run: terragrunt run-all destroy --terragrunt-non-interactive
         env:
-          TF_VAR_db_password: ${{ secrets.PROD_DB_PASSWORD }}
+          TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
           TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
+
+    #   - uses: hashicorp/setup-terraform@v3
+
+    #   - name: Terraform Init
+    #     working-directory: live/production
+    #     run: terraform init
+
+    #   - name: Terraform Destroy
+    #     working-directory: live/production
+    #     run: terraform destroy -auto-approve
+    #     env:
+    #       TF_VAR_db_password: ${{ secrets.PROD_DB_PASSWORD }}
+    #       TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
