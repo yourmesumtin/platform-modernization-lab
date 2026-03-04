@@ -1,5 +1,5 @@
 include "root" {
-  path = find_in_parent_folders()
+  path = find_in_parent_folders("root.hcl")
 }
 
 terraform {
@@ -7,5 +7,6 @@ terraform {
 }
 
 inputs = {
-  repository_names = ["api", "worker", "frontend"]
+    env                 = "staging"
+    repository_names = ["api", "worker", "frontend"]
 }

@@ -1,5 +1,5 @@
 include "root" {
-  path = find_in_parent_folders()
+  path = find_in_parent_folders("root.hcl")
 }
 
 terraform {
@@ -19,8 +19,9 @@ dependency "vpc" {
 }
 
 inputs = {
-  vpc_id              = dependency.vpc.outputs.vpc_id
-  private_subnet_ids  = dependency.vpc.outputs.private_subnet_ids
+  env                 = "staging"
+  vpc_id              =  dependency.vpc.outputs.vpc_id
+  private_subnet_ids  =  dependency.vpc.outputs.private_subnet_ids 
   allowed_cidr_blocks = ["10.0.3.0/24", "10.0.4.0/24"]
   instance_class      = "db.t3.micro"
   db_name             = "appdb"

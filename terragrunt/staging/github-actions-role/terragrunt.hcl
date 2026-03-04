@@ -1,5 +1,5 @@
 include "root" {
-  path = find_in_parent_folders()
+  path = find_in_parent_folders("root.hcl")
 }
 
 terraform {
@@ -25,6 +25,7 @@ dependency "ecr" {
 }
 
 inputs = {
+  env                 = "staging"
   github_org           = "yourmesumtin"
   github_repo          = "platform-modernization-lab"
   ecr_repository_arns  = values(dependency.ecr.outputs.repository_arns)

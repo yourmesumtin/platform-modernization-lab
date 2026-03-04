@@ -1,5 +1,5 @@
 include "root" {
-  path = find_in_parent_folders()
+  path = find_in_parent_folders("root.hcl")
 }
 
 terraform {
@@ -21,10 +21,11 @@ dependency "ecr" {
       frontend = "123456789012.dkr.ecr.us-east-2.amazonaws.com/frontend"
     }
   }
-  mock_outputs_allowed_terraform_commands = ["plan", "validate"]
+  mock_outputs_allowed_terraform_commands = ["init","plan", "validate"]
 }
 
 inputs = {
+  env                 = "staging"
   github_org           = "yourmesumtin"
   github_repo          = "platform-modernization-lab"
   ecr_repository_arns  = values(dependency.ecr.outputs.repository_arns)

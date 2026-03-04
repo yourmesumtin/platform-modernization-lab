@@ -1,5 +1,5 @@
 include "root" {
-  path = find_in_parent_folders()
+  path = find_in_parent_folders("root.hcl")
 }
 
 terraform {
@@ -15,12 +15,13 @@ dependency "vpc" {
     private_subnet_ids = ["subnet-00000000", "subnet-11111111"]
     public_subnet_ids  = ["subnet-22222222", "subnet-33333333"]
   }
-  mock_outputs_allowed_terraform_commands = ["plan", "validate"]
+  mock_outputs_allowed_terraform_commands = ["init", "plan", "validate"]
 }
 
 inputs = {
-  vpc_id              = dependency.vpc.outputs.vpc_id
-  private_subnet_ids  = dependency.vpc.outputs.private_subnet_ids
+  env                 = "staging"
+  vpc_id              =  dependency.vpc.outputs.vpc_id
+  private_subnet_ids  =  dependency.vpc.outputs.private_subnet_ids 
   allowed_cidr_blocks = ["10.0.3.0/24", "10.0.4.0/24"]
   instance_class      = "db.t3.micro"
   db_name             = "appdb"
