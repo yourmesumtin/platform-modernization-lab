@@ -18,6 +18,7 @@ dependency "vpc" {
 }
 
 inputs = {
+    env                 = "production"
   vpc_id              = dependency.vpc.outputs.vpc_id
   private_subnet_ids  = dependency.vpc.outputs.private_subnet_ids
   allowed_cidr_blocks = ["10.1.3.0/24", "10.1.4.0/24"]

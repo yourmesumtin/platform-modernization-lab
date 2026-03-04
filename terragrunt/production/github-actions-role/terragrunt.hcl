@@ -7,6 +7,7 @@ terraform {
 }
 
 inputs = {
+   env                 = "production"
   github_org                 = "yourmesumtin"
   github_repo                = "platform-modernization-lab"
   ecr_repository_arns        = []

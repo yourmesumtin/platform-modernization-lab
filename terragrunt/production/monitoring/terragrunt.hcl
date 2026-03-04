@@ -17,6 +17,7 @@ dependency "eks" {
 }
 
 inputs = {
+    env                 = "production"
   eks_cluster_name       = dependency.eks.outputs.cluster_name
   db_instance_identifier = "production-postgres"
   alert_email            = get_env("TF_VAR_alert_email", "")
