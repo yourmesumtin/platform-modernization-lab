@@ -128,6 +128,12 @@ jobs:
             --region ${{ env.AWS_REGION }} \
             --name staging-eks-cluster
 
+      - name: Apply Kubernetes manifests
+        run: |
+          kubectl apply -f k8s/deployment.yaml
+          kubectl apply -f k8s/hpa.yaml
+          kubectl apply -f k8s/service.yaml
+
       - name: Deploy to staging
         env:
           ECR_REGISTRY: ${{ needs.build.outputs.ecr_registry }}
@@ -229,6 +235,12 @@ jobs:
           aws eks update-kubeconfig \
             --region ${{ env.AWS_REGION }} \
             --name production-eks-cluster
+
+      - name: Apply Kubernetes manifests
+        run: |
+          kubectl apply -f k8s/deployment.yaml
+          kubectl apply -f k8s/hpa.yaml
+          kubectl apply -f k8s/service.yaml
 
       - name: Apply canary deployment
         env:
