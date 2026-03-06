@@ -8,6 +8,7 @@ terraform {
 
 dependency "ecr" {
   config_path = "../ecr"
+#   skip_outputs = true
 
     mock_outputs = {
     repository_arns = {
@@ -28,6 +29,8 @@ inputs = {
   env                 = "staging"
   github_org           = "yourmesumtin"
   github_repo          = "platform-modernization-lab"
+#   ecr_repository_arns  = []
   ecr_repository_arns  = values(dependency.ecr.outputs.repository_arns)
-  create_oidc_provider = true
+  create_oidc_provider = false
+   existing_oidc_provider_arn = "arn:aws:iam::579635679563:oidc-provider/token.actions.githubusercontent.com"
 }

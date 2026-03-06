@@ -7,5 +7,6 @@ terraform {
 }
 
 inputs = {
-  repository_names = ["api", "worker", "frontend"]
+    env                 = "staging"
+    repository_names = ["api", "worker", "frontend"]
 }
