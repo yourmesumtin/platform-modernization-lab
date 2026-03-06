@@ -1,6 +1,6 @@
 # Platform Modernization Lab
 
-A production-grade cloud platform built with Terraform, AWS, Kubernetes, and GitHub Actions — demonstrating the thinking and execution of a principal platform engineer.
+A production-grade cloud platform built with Terraform, Terragrunt, AWS, Kubernetes, and GitHub Actions — demonstrating the thinking and execution of a principal platform engineer.
 
 ---
 
@@ -20,32 +20,32 @@ GitHub Actions (CI/CD)
     │   OIDC — no static AWS keys
     ▼
 AWS
-    ├── VPC (10.0.0.0/16)
+    ├── VPC (staging: 10.0.0.0/16 | production: 10.1.0.0/16)
     │   ├── Public Subnets  (us-east-2a, us-east-2b)
     │   ├── Private Subnets (us-east-2a, us-east-2b)
     │   ├── Internet Gateway
-    │   └── NAT Gateway (single — intentional for lab)
+    │   └── NAT Gateway (single — intentional for lab cost)
     │
     ├── EKS (Kubernetes 1.29)
     │   ├── Managed Node Group (2 nodes, t3.small)
     │   ├── IRSA enabled (IAM Roles for Service Accounts)
     │   └── CloudWatch Container Insights
     │
-    ├── ECR
+    ├── ECR (account-scoped — shared across environments)
     │   ├── api
     │   ├── worker
     │   └── frontend
     │
     ├── RDS (PostgreSQL 15.x)
-    │   ├── Single instance (db.t3.micro)
-    │   ├── Private subnet only
+    │   ├── db.t3.micro, single-AZ
+    │   ├── Private subnets only
     │   └── Encrypted at rest
     │
     └── CloudWatch
-        ├── Container Insights (EKS metrics)
+        ├── Container Insights (automatic EKS metrics)
         ├── 5 metric alarms
-        ├── SNS alerting
-        └── Platform dashboard
+        ├── SNS email alerting
+        └── Platform dashboard (defined as Terraform code)
 ```
 
 ---
@@ -55,249 +55,750 @@ AWS
 ```
 platform-modernization-lab/
 │
-├── modules/                        # Reusable Terraform modules
-│   ├── vpc/                        # VPC, subnets, NAT, routing
-│   ├── eks/                        # EKS cluster, node group, IRSA
-│   ├── ecr/                        # ECR repositories + lifecycle policies
-│   ├── rds/                        # PostgreSQL RDS instance
-│   ├── github-actions-role/        # OIDC role for GitHub Actions
-│   └── monitoring/                 # CloudWatch alarms + dashboard
+├── modules/                        # Reusable Terraform modules (written from scratch)
+│   ├── vpc/
+│   ├── eks/
+│   ├── ecr/
+│   ├── rds/
+│   ├── github-actions-role/
+│   └── monitoring/
 │
-├── live/                           # Environment-specific configurations
+├── terragrunt/                     # Environment configurations
+│   ├── root.hcl                    # Root — auto-generates S3 backend for every module
 │   ├── staging/
-│   │   ├── main.tf
-│   │   ├── backend.tf
-│   │   ├── variables.tf
-│   │   └── outputs.tf
+│   │   ├── terragrunt.hcl          # Staging env inputs (env name, tags)
+│   │   ├── vpc/
+│   │   ├── eks/
+│   │   ├── ecr/
+│   │   ├── rds/
+│   │   ├── github-actions-role/
+│   │   └── monitoring/
 │   └── production/
-│       ├── main.tf
-│       ├── backend.tf
-│       ├── variables.tf
-│       └── outputs.tf
+│       ├── terragrunt.hcl          # Production env inputs
+│       ├── vpc/
+│       ├── eks/
+│       ├── rds/
+│       ├── github-actions-role/
+│       └── monitoring/
 │
-├── k8s/                            # Kubernetes manifests
-│   ├── deployment.yaml             # App deployment with probes + resource limits
-│   ├── hpa.yaml                    # Horizontal Pod Autoscaler
+├── k8s/
+│   ├── deployment.yaml
+│   ├── hpa.yaml
+│   ├── service.yaml
 │   └── canary/
-│       └── deployment-canary.yaml  # Canary deployment manifest
+│       └── deployment-canary.yaml
 │
 ├── .github/workflows/
-│   └── deploy.yml                  # Full CI/CD pipeline
+│   ├── deploy.yml                  # Full CI/CD pipeline
+│   └── destroy.yml                 # Manual destroy with confirmation gate
 │
-├── app.py                          # Flask application
+├── app.py                          # Flask API
 ├── requirements.txt
 └── Dockerfile
 ```
 
 ---
 
-## CI/CD Pipeline
+## Why Modules Were Written From Scratch
 
-Every push to `main` triggers a fully automated pipeline with a manual approval gate before production.
+The community VPC Terraform module has 600+ lines supporting 50+ variables. This platform needs 2 public subnets, 2 private subnets, and a NAT gateway. Writing modules directly means every line is understood and explainable in a review — which is the entire point of a platform engineering assessment.
+
+---
+
+## Terragrunt Design
+
+### Why Terragrunt
+
+| Problem | Without Terragrunt | With Terragrunt |
+|---|---|---|
+| Backend config | Copy-paste `backend.tf` per environment | Single `root.hcl` generates it for every module |
+| Module output wiring | Manual variable passing | `dependency` blocks wire outputs declaratively |
+| Environment drift | Two `main.tf` files that diverge | DRY — environments inherit from root, only override inputs |
+| Apply ordering | Manual | `run-all` respects dependency graph automatically |
+
+### Root Config Pattern
+
+`terragrunt/root.hcl` generates the S3 backend for every module using `path_relative_to_include()`:
+
+```hcl
+remote_state {
+  backend = "s3"
+  generate = {
+    path      = "backend.tf"
+    if_exists = "overwrite_terragrunt"
+  }
+  config = {
+    bucket         = "tf-state-platform-lab"
+    key            = "${path_relative_to_include()}/terraform.tfstate"
+    region         = "us-east-2"
+    dynamodb_table = "terraform-state-locks"
+    encrypt        = true
+  }
+}
+```
+
+This generates unique state paths automatically:
+- `staging/vpc/terraform.tfstate`
+- `staging/eks/terraform.tfstate`
+- `production/vpc/terraform.tfstate`
+
+No `backend.tf` files anywhere in the repo.
+
+### Dependency Pattern
+
+```hcl
+dependency "vpc" {
+  config_path = "../vpc"
+
+  mock_outputs = {
+    vpc_id             = "vpc-00000000"
+    private_subnet_ids = ["subnet-00000000", "subnet-11111111"]
+    public_subnet_ids  = ["subnet-22222222", "subnet-33333333"]
+  }
+  mock_outputs_allowed_terraform_commands = ["init", "plan", "validate"]
+}
+
+inputs = {
+  private_subnet_ids = dependency.vpc.outputs.private_subnet_ids
+}
+```
+
+`mock_outputs` allow `plan` and `validate` to run in CI before the VPC has been applied. Real values are used during `apply`.
+
+### Production Safety — Three Layers
+
+```hcl
+# Layer 1 — module input
+inputs = {
+  deletion_protection = true
+}
+
+# Layer 2 — module resource lifecycle
+resource "aws_db_instance" "main" {
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+# Layer 3 — GitHub Environment approval gate (pipeline blocks on reviewer approval)
+```
+
+---
+
+## CI/CD Pipeline
 
 ```
 git push → main
     │
     ▼
-[1] Terraform Staging
-    Apply infrastructure changes to staging
+[1] Terragrunt Staging
+    terragrunt run-all apply
+    Applies in dependency order: vpc → eks/ecr/rds → monitoring
     │
     ▼
 [2] Build & Push
-    docker build → tag with git SHA → push to ECR
+    docker build
+    tag: ECR_URI:GIT_SHA  ← full traceability from pod to commit
+    docker push to ECR
     │
     ▼
 [3] Deploy to Staging
-    kubectl set image → rollout status → smoke test
+    kubectl set image deployment/api api=ECR_URI:GIT_SHA
+    kubectl rollout status deployment/api --timeout=180s
+    echo "Smoke test passed"
     │
     ▼
-[4] ⏸ Manual Approval Gate
-    GitHub Environment protection — reviewer must approve
+[4] ⏸  Manual Approval Gate
+    GitHub Environment protection rules
+    Required reviewer must approve before production
     │
     ▼
-[5] Terraform Production
-    Apply infrastructure changes to production
+[5] Terragrunt Production
+    terragrunt run-all apply
     │
     ▼
-[6] Canary Deploy
-    Deploy 1 canary pod (~33% traffic)
-    Monitor for 60 seconds
+[6] Canary Deploy to Production
+    Deploy 1 canary pod (api-canary)
+    Service routes ~33% traffic naturally via shared app:api label
+    Monitor 60 seconds
     │
-    ├── Healthy → Full rollout → Delete canary
-    └── Unhealthy → Auto rollback → Pipeline fails
+    ├── readyReplicas >= 1 → Full rollout → Delete canary → Done
+    └── readyReplicas = 0 → kubectl delete canary → exit 1 → Pipeline fails
 ```
 
-### Key Pipeline Design Decisions
+### OIDC Authentication
 
-**OIDC authentication** — GitHub Actions assumes an IAM role via OIDC instead of using static `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. Short-lived tokens are issued per workflow run. No long-lived credentials stored anywhere.
+No static credentials anywhere. GitHub Actions authenticates to AWS via OIDC — short-lived tokens issued per workflow run. If someone forks the repo they get nothing.
 
-**Git SHA as image tag** — every Docker image is tagged with the exact commit that built it. Full traceability from a running pod back to the source code.
+```yaml
+- uses: aws-actions/configure-aws-credentials@v4
+  with:
+    role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+    aws-region: us-east-2
+```
 
-**`kubectl rollout status`** — the pipeline waits for rollout confirmation before declaring success. A broken deploy fails the pipeline immediately.
+### Required GitHub Secrets
 
-**Canary before full rollout** — new production images serve ~33% of traffic for 60 seconds before replacing the stable deployment. Automatic rollback if pods don't reach ready state.
+| Secret | Description |
+|---|---|
+| `AWS_ROLE_ARN` | Staging GitHub Actions IAM role ARN |
+| `DB_PASSWORD` | Staging RDS password |
+| `PROD_AWS_ROLE_ARN` | Production GitHub Actions IAM role ARN |
+| `PROD_DB_PASSWORD` | Production RDS password |
+| `ALERT_EMAIL` | CloudWatch alarm notification email |
 
 ---
 
-## Terraform Module Design
+## Bootstrap (First Time Only)
 
-Modules are written from scratch, not sourced from the Terraform Registry. This is an intentional decision: the community VPC module has 600+ lines and supports 50+ variables. This platform needs 2 public subnets, 2 private subnets, and a NAT gateway. Writing it directly means every line is understood and explainable.
+The pipeline requires the GitHub Actions IAM role to authenticate. That role must be created before the pipeline can run — a one-time chicken-and-egg problem solved by local bootstrap.
 
-### Module principles
+```bash
+# 1. Create GitHub OIDC provider (one time, account-level)
+aws iam create-open-id-connect-provider \
+  --url https://token.actions.githubusercontent.com \
+  --client-id-list sts.amazonaws.com \
+  --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1
 
-**Lean interfaces** — modules expose only what callers need. Outputs are scoped to what consumers actually reference.
+# 2. Apply modules in dependency order
+cd terragrunt/staging/vpc && terragrunt apply
+cd ../ecr && terragrunt apply
+cd ../eks && terragrunt apply
+cd ../rds && terragrunt apply
+cd ../github-actions-role && terragrunt apply
+cd ../monitoring && terragrunt apply
 
-**`for_each` over resource duplication** — the ECR module creates all repositories from a single resource block using `for_each = toset(var.repository_names)`. Adding a new service means adding one string to a list.
+# 3. Enable API_AND_CONFIG_MAP authentication on EKS
+aws eks update-cluster-config \
+  --name staging-eks-cluster \
+  --region us-east-2 \
+  --access-config authenticationMode=API_AND_CONFIG_MAP
 
-**Explicit over implicit** — no default values on sensitive variables. Terraform forces the caller to provide them. Passwords never have defaults.
+# 4. Grant your IAM user kubectl access
+aws eks create-access-entry \
+  --cluster-name staging-eks-cluster \
+  --principal-arn arn:aws:iam::ACCOUNT_ID:user/YOUR_USER \
+  --region us-east-2
 
-**Comments on conscious decisions** — every lab simplification (single NAT, single-AZ RDS, `skip_final_snapshot`) is annotated with what the production equivalent would be. A reviewer can always understand why.
+aws eks associate-access-policy \
+  --cluster-name staging-eks-cluster \
+  --principal-arn arn:aws:iam::ACCOUNT_ID:user/YOUR_USER \
+  --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
+  --access-scope type=cluster \
+  --region us-east-2
 
-### Remote State
+# 5. Grant GitHub Actions role kubectl access
+aws eks create-access-entry \
+  --cluster-name staging-eks-cluster \
+  --principal-arn arn:aws:iam::ACCOUNT_ID:role/staging-github-actions-role \
+  --region us-east-2
 
-State is stored in S3 with DynamoDB locking. Each environment has its own state key, preventing cross-environment interference.
+aws eks associate-access-policy \
+  --cluster-name staging-eks-cluster \
+  --principal-arn arn:aws:iam::ACCOUNT_ID:role/staging-github-actions-role \
+  --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
+  --access-scope type=cluster \
+  --region us-east-2
 
+# 6. Apply Kubernetes manifests
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/hpa.yaml
+kubectl apply -f k8s/service.yaml
+
+# 7. Push — pipeline takes over from here
+git push origin main
 ```
-s3://tf-state-platform-lab/live/staging/terraform.tfstate
-s3://tf-state-platform-lab/live/production/terraform.tfstate
-```
 
----
-
-## Kubernetes Configuration
-
-### Deployment
-
-The application deployment includes both readiness and liveness probes — two separate concerns:
-
-- **Readiness** — controls traffic routing. Pod only receives requests when truly ready to serve them.
-- **Liveness** — controls pod restart. Kubernetes restarts the pod if it becomes unresponsive.
-
-Resource requests and limits are defined on every container. This is required for HPA to function — without `requests.cpu`, the autoscaler has no baseline to measure against.
-
-### Horizontal Pod Autoscaler
-
-HPA is configured on `autoscaling/v2` (not v1). Scale target is 70% average CPU utilization across pods, with a minimum of 2 replicas and a maximum of 6.
-
-### Canary Strategy
-
-The canary deployment shares the `app: api` label with the stable deployment, meaning the Kubernetes Service routes traffic to both without any additional configuration. With 1 canary pod and 2 stable pods, traffic splits approximately 33/67. No service mesh required for this pattern.
+After bootstrap, every change goes through the pipeline. No more local applies.
 
 ---
 
 ## Monitoring
 
-CloudWatch Container Insights is enabled via the `amazon-cloudwatch-observability` EKS add-on. This provides node and pod metrics automatically without manual instrumentation.
-
-### Alarms
-
 | Alarm | Threshold | Why |
 |---|---|---|
-| Node CPU | > 80% for 2 periods | Sustained high CPU indicates capacity issue |
-| Node Memory | > 80% for 2 periods | Memory pressure before OOM kills |
-| Pod Restarts | > 5 in 1 minute | Crash loop detection |
-| RDS CPU | > 80% for 2 periods | Database under load |
-| RDS Free Storage | < 5GB | Silent killer — catches disk exhaustion early |
-
-### Alerting
-
-SNS topic routes alarms to email. In production this would be SNS → PagerDuty or SNS → Slack via Lambda. The pattern is identical — only the SNS subscription endpoint changes.
-
-### Dashboard as Code
-
-The CloudWatch dashboard is defined in Terraform. It is versioned, reproducible, and identical across environments. Clicking together a dashboard in the console is not repeatable and not reviewable.
+| Node CPU | > 80% for 2 periods | Sustained pressure indicates capacity issue |
+| Node Memory | > 80% for 2 periods | Memory pressure before OOM kills pods |
+| Pod Restarts | > 5 per minute | Crash loop detection |
+| RDS CPU | > 80% for 2 periods | Database under sustained load |
+| RDS Free Storage | < 5GB | Silent killer — disk full doesn't appear in CPU metrics |
 
 ---
 
-## Security Decisions
+## Kubernetes Configuration
 
-**No public database access** — RDS is in private subnets with a security group that only allows port 5432 from the VPC private CIDR blocks. It is never reachable from the internet.
+### Probes
 
-**Encryption at rest** — RDS storage is encrypted. ECR images are scanned on push for vulnerabilities.
+```yaml
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 10
+  periodSeconds: 5
 
-**Least privilege on node IAM role** — only three policies attached: `AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, and `AmazonEC2ContainerRegistryReadOnly`. Nothing more.
-
-**IRSA ready** — the OIDC provider is configured on the EKS cluster. Individual pods can assume scoped IAM roles rather than inheriting broad node permissions.
-
-**Sensitive outputs** — RDS endpoint and CA certificate outputs are marked `sensitive = true`. They never print in CI logs.
-
-**No hardcoded credentials** — passwords are injected via `TF_VAR_` environment variables from GitHub secrets. `terraform.tfvars` files are gitignored.
-
----
-
-## Local Development
-
-### Prerequisites
-
-- AWS CLI configured with appropriate credentials
-- Terraform >= 1.5
-- kubectl
-- Docker
-
-### Bootstrap (first time only)
-
-```bash
-# Staging
-cd live/staging
-terraform init
-terraform apply
-
-# Connect kubectl
-aws eks update-kubeconfig --region us-east-2 --name staging-eks-cluster
-
-# Deploy initial manifests
-kubectl apply -f k8s/deployment.yaml
-kubectl apply -f k8s/hpa.yaml
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 15
+  periodSeconds: 10
 ```
 
-### Teardown
+Readiness controls traffic routing. Liveness controls pod restart. Two different concerns — both required.
 
-```bash
-cd live/staging
-terraform destroy
+### HPA
 
-cd ../production
-terraform destroy
+```yaml
+apiVersion: autoscaling/v2
+spec:
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
 ```
 
-Always destroy when not actively using the environment. EKS, NAT Gateway, and RDS are the primary cost drivers.
+HPA requires `resources.requests.cpu` to be defined on the container — otherwise it has nothing to measure utilization against.
+
+### Canary Strategy
+
+The canary deployment shares the `app: api` label with the stable deployment. The Kubernetes Service selects on `app: api` only — it has no awareness of the `track: canary` label. Traffic naturally splits based on pod count: 1 canary pod + 2 stable pods = ~33% canary traffic. No service mesh required.
 
 ---
 
-## Cost Awareness
+## Destroy
 
-Approximate monthly cost if left running 24/7:
+```bash
+# Via GitHub Actions (recommended)
+# Actions → Terraform Destroy → Run workflow
+# Select environment, type DESTROY, approve
 
-| Resource | Cost |
+# Or locally — production first, then staging
+# Production first because staging owns the shared OIDC provider
+cd terragrunt/production && terragrunt run-all destroy
+cd ../staging && terragrunt run-all destroy
+```
+
+Before destroy — delete Kubernetes LoadBalancer services first or the VPC will fail to delete due to orphaned ELB ENIs:
+```bash
+kubectl delete service api
+# Wait 2 minutes, then destroy
+```
+
+---
+
+## Cost
+
+Approximate per environment running 24/7:
+
+| Resource | Monthly |
 |---|---|
-| EKS Cluster | ~$72/month |
-| EC2 Nodes (2x t3.small) | ~$30/month |
-| NAT Gateway | ~$33/month |
-| RDS t3.micro | ~$12/month |
-| ECR storage | ~$1/month |
-| **Total per environment** | **~$150/month** |
+| EKS cluster | ~$72 |
+| EC2 nodes (2x t3.small) | ~$30 |
+| NAT Gateway | ~$33 |
+| RDS db.t3.micro | ~$12 |
+| **Total** | **~$150** |
 
-Two environments (staging + production) running continuously would cost approximately $300/month. Use `terraform destroy` when not in use.
+Destroy when not actively working. Two environments = ~$300/month if left running.
 
 ---
 
-## What Would Be Different in Production
+## Troubleshooting & Learnings
+
+Everything below was encountered and resolved during this build. This is not documentation written after the fact — these are real issues and their real fixes.
+
+---
+
+### AWS Credentials Invalid
+
+**Error:** `InvalidClientTokenId: The security token included in the request is invalid`
+
+**Cause:** Credentials file corrupted or expired.
+
+**Fix:**
+```bash
+rm ~/.aws/credentials
+aws configure
+aws sts get-caller-identity  # Always verify before terraform
+```
+
+**Learning:** Run `aws sts get-caller-identity` before any Terraform operation. It confirms identity and connectivity in one command.
+
+---
+
+### Terraform State Lock — Stale DynamoDB Entry
+
+**Error:** `Error acquiring the state lock — ConditionalCheckFailedException`
+
+**Cause:** Previous pipeline run was interrupted mid-apply, leaving a lock in DynamoDB that was never released.
+
+**Fix:**
+```bash
+terraform force-unlock LOCK_ID
+# Lock ID is shown in the error output
+```
+
+**Learning:** Verify no other apply is actually running before force-unlocking. This is safe when the pipeline was cancelled or timed out, not when another apply is genuinely in progress.
+
+---
+
+### EKS Node Group — Instance Type Not Eligible
+
+**Error:** `AsgInstanceLaunchFailures: The specified instance type is not eligible for Free Tier`
+
+**Fix:** Change `node_instance_type` from `t3.medium` to `t3.small`.
+
+**Learning:** Check Free Tier eligibility before choosing instance types for lab environments. `t3.small` is sufficient for lightweight EKS workloads.
+
+---
+
+### RDS — Reserved Username
+
+**Error:** `MasterUsername admin cannot be used as it is a reserved word`
+
+**Fix:** Change `db_username` from `admin` to `dbadmin`.
+
+**Learning:** PostgreSQL reserves `admin`, `postgres`, `root`, and others. Use `dbadmin` or `appuser`.
+
+---
+
+### RDS — Engine Version Not Available
+
+**Error:** `Cannot find version 15.4 for postgres`
+
+**Fix:**
+```bash
+aws rds describe-db-engine-versions \
+  --engine postgres \
+  --query "DBEngineVersions[].EngineVersion" \
+  --output table
+```
+
+Use an available version from the output.
+
+**Learning:** AWS periodically removes older minor versions. Never hardcode specific minor versions — check availability first.
+
+---
+
+### kubectl — Credentials Error After Cluster Recreation
+
+**Error:** `error: You must be logged in to the server`
+
+**Cause:** Kubeconfig references the old cluster's certificate authority. The new cluster has a different CA even if the name is the same.
+
+**Fix:**
+```bash
+kubectl config delete-context arn:aws:eks:REGION:ACCOUNT:cluster/CLUSTER_NAME
+aws eks update-kubeconfig --region REGION --name CLUSTER_NAME
+```
+
+**Learning:** Always refresh kubeconfig after cluster recreation. The ARN may be identical but the CA certificate is different.
+
+---
+
+### IAM User Cannot Access EKS
+
+**Error:** `You must be logged in to the server` even with valid AWS credentials.
+
+**Cause:** EKS has two separate access control layers — IAM for AWS API calls and Kubernetes RBAC for kubectl. IAM permissions do not automatically grant kubectl access.
+
+**Fix:**
+```bash
+# Enable API_AND_CONFIG_MAP mode (required for access entries)
+aws eks update-cluster-config \
+  --name CLUSTER_NAME \
+  --region REGION \
+  --access-config authenticationMode=API_AND_CONFIG_MAP
+
+# Create access entry
+aws eks create-access-entry \
+  --cluster-name CLUSTER_NAME \
+  --principal-arn arn:aws:iam::ACCOUNT_ID:user/USERNAME \
+  --region REGION
+
+# Associate cluster admin policy
+aws eks associate-access-policy \
+  --cluster-name CLUSTER_NAME \
+  --principal-arn arn:aws:iam::ACCOUNT_ID:user/USERNAME \
+  --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
+  --access-scope type=cluster \
+  --region REGION
+```
+
+Requires AWS CLI v2.13+. Check version with `aws --version`. Update at https://awscli.amazonaws.com/AWSCLIV2.msi if needed.
+
+**Learning:** EKS authentication is separate from IAM. Access Entries (API mode) is the modern approach — prefer it over the legacy `aws-auth` ConfigMap.
+
+---
+
+### Orphaned Load Balancer Blocks VPC Destroy
+
+**Error:** `DependencyViolation: The subnet has dependencies and cannot be deleted`
+
+**Cause:** A Kubernetes `LoadBalancer` service provisioned an AWS ELB. Terraform doesn't manage this ELB — it was created by the Kubernetes cloud controller. The ELB holds ENIs in the subnets, blocking deletion.
+
+**Fix:**
+```bash
+# Delete the k8s service first
+kubectl delete service api
+
+# Wait 2 minutes for ELB to fully release
+# Then delete the orphaned security group
+aws ec2 describe-security-groups \
+  --filters "Name=vpc-id,Values=VPC_ID" \
+  --query "SecurityGroups[].{ID:GroupId,Name:GroupName}"
+
+aws ec2 delete-security-group --group-id sg-XXXXXXXX
+
+# Re-run destroy
+terraform destroy
+```
+
+**Learning:** Any Kubernetes resource that creates AWS resources must be deleted before `terraform destroy`. Always delete LoadBalancer services and PersistentVolumeClaims before destroying infrastructure.
+
+---
+
+### ECR Repositories Block Destroy
+
+**Error:** `RepositoryNotEmptyException: The repository cannot be deleted because it still contains images`
+
+**Immediate fix:**
+```bash
+aws ecr delete-repository --repository-name api --force
+aws ecr delete-repository --repository-name worker --force
+aws ecr delete-repository --repository-name frontend --force
+```
+
+**Permanent fix — add to ECR module:**
+```hcl
+resource "aws_ecr_repository" "main" {
+  force_delete = true
+  ...
+}
+```
+
+**Learning:** `force_delete = true` is essential for lab environments. Without it every destroy requires manually emptying repositories first.
+
+---
+
+### ECR Is Account-Scoped, Not Environment-Scoped
+
+**Error:** `RepositoryAlreadyExistsException` when production Terraform tried to create ECR repositories.
+
+**Cause:** ECR repositories are global within an AWS account. Staging already created `api`, `worker`, `frontend`. Production cannot create them again.
+
+**Fix:** Remove ECR module from production entirely. Only staging creates and owns ECR repos. Production references the same repository URLs.
+
+**Learning:** Not all AWS resources are environment-scoped. ECR, IAM OIDC providers, and Route53 hosted zones are account-level. Always check scope before duplicating across environments.
+
+---
+
+### Terragrunt Root Config Not Generating Backend
+
+**Symptom:** No `backend.tf` generated in `.terragrunt-cache`. State saving locally, not to S3.
+
+**Cause:** `find_in_parent_folders()` searches upward for a file named `terragrunt.hcl`. The staging-level `terragrunt.hcl` was intercepting the search before reaching the actual root config.
+
+**Fix:** Rename root config to `root.hcl`:
+```bash
+mv terragrunt/terragrunt.hcl terragrunt/root.hcl
+```
+
+Update all child module includes:
+```hcl
+include "root" {
+  path = find_in_parent_folders("root.hcl")
+}
+```
+
+Batch update all files:
+```bash
+find terragrunt -name "terragrunt.hcl" \
+  -exec sed -i 's/find_in_parent_folders()/find_in_parent_folders("root.hcl")/g' {} \;
+```
+
+**Learning:** In multi-level Terragrunt structures, use a distinct filename for the root config. `root.hcl` is the community convention for this reason.
+
+---
+
+### Terragrunt Circular Include Error
+
+**Error:** `Only one level of includes is allowed`
+
+**Cause:** The staging `terragrunt.hcl` included the root, and child modules also included the staging file — creating a two-level include chain.
+
+**Fix:** The staging/production env-level `terragrunt.hcl` files should not include the root themselves. Child modules include root directly. Env-level files only contain inputs.
+
+**Learning:** Terragrunt allows only one level of `include`. Each module should include the root directly. Environment-level configs hold shared inputs but are not in the include chain themselves.
+
+---
+
+### Terragrunt Dependency Blocks Block Import
+
+**Error:** `dependency vpc detected no outputs` when running `terragrunt import` before VPC existed.
+
+**Fix — temporary for import operations:**
+```hcl
+dependency "vpc" {
+  config_path  = "../vpc"
+  skip_outputs = true
+
+  mock_outputs = {
+    vpc_id             = "vpc-00000000"
+    private_subnet_ids = ["subnet-00000000", "subnet-11111111"]
+  }
+}
+
+inputs = {
+  # Temporarily hardcode during import
+  vpc_id             = "vpc-00000000"
+  private_subnet_ids = ["subnet-00000000", "subnet-11111111"]
+}
+```
+
+Remove `skip_outputs = true` and restore real `dependency.vpc.outputs.*` after import.
+
+**Learning:** `skip_outputs = true` bypasses all dependency output resolution. It enables import before dependencies exist but will silently use mock values during apply if left in place. Always remove it after import.
+
+---
+
+### Terragrunt Mock Outputs Must Allow `init`
+
+**Error:** CI pipeline failed during `terragrunt run-all init` with dependency output errors.
+
+**Cause:** `init` resolves dependency outputs to configure backends. If dependencies have no state, init fails unless mock outputs explicitly permit it.
+
+**Fix:**
+```hcl
+mock_outputs_allowed_terraform_commands = ["init", "plan", "validate"]
+```
+
+**Learning:** Always include `"init"` in `mock_outputs_allowed_terraform_commands` for CI pipelines. Without it, `run-all init` fails on any module with unresolved dependencies.
+
+---
+
+### OIDC Provider Already Exists on Re-Bootstrap
+
+**Error:** `EntityAlreadyExists: Provider with url https://token.actions.githubusercontent.com already exists`
+
+**Cause:** The OIDC provider is account-scoped. It survives `terraform destroy` because it was outside the destroyed state.
+
+**Fix:** Import it into the new state:
+```bash
+terragrunt import 'aws_iam_openid_connect_provider.github[0]' \
+  arn:aws:iam::ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com
+```
+
+**Learning:** The GitHub OIDC provider should be treated as a permanent account-level resource — created once, never destroyed. In production, manage it in a dedicated bootstrap stack separate from environment infrastructure.
+
+---
+
+### Smoke Test Times Out on Terminating Pods
+
+**Error:** `kubectl wait` timed out — matched old pods being terminated alongside new ones.
+
+**Fix:** Replace `kubectl wait` with `kubectl rollout status`:
+```yaml
+- name: Smoke test
+  run: |
+    kubectl rollout status deployment/api --timeout=180s
+    echo "Smoke test passed"
+```
+
+**Learning:** `kubectl rollout status` watches only the new ReplicaSet. It ignores terminating pods from the previous deployment and returns success only when the new version reaches desired state. It is the correct tool for CI deployment verification.
+
+---
+
+### Canary Job — Empty ECR_REGISTRY and IMAGE_TAG
+
+**Error:** `sed` produced an invalid image name — `ECR_REGISTRY` and `IMAGE_TAG` were empty strings.
+
+**Cause:** The canary job listed `needs: [terraform-production]` but not `needs: [build]`. GitHub Actions job outputs are only accessible from jobs directly listed in `needs` — transitive dependencies do not propagate outputs.
+
+**Fix:**
+```yaml
+deploy-production-canary:
+  needs: [build, terraform-production]  # build must be explicit
+```
+
+**Learning:** Always explicitly list every job whose outputs you need in `needs`. GitHub Actions does not propagate outputs through intermediate jobs.
+
+---
+
+### Canary Manifest Not Found in Pipeline
+
+**Error:** `sed: can't read k8s/canary/deployment-canary.yaml: No such file or directory`
+
+**Cause:** The file existed locally but in the wrong path (`k8s/deployment-canary.yaml` instead of `k8s/canary/deployment-canary.yaml`) and had not been committed to git.
+
+**Fix:**
+```bash
+mkdir k8s/canary
+mv k8s/deployment-canary.yaml k8s/canary/deployment-canary.yaml
+git add k8s/canary/deployment-canary.yaml
+git commit -m "move canary manifest to correct path"
+git push origin main
+```
+
+**Learning:** The pipeline checks out code from git — not your local filesystem. Files must be committed and pushed to be available in the runner. Always verify with `git status` before pushing.
+
+---
+
+### RDS Subnet Group Cannot Move Between VPCs
+
+**Error:** `InvalidParameterValue: The new Subnets are not in the same Vpc as the existing subnet group`
+
+**Cause:** A new VPC was created with different subnets. The existing RDS subnet group was in the old VPC. Subnet groups cannot be moved between VPCs — they must be recreated.
+
+**Fix:**
+```bash
+# Delete RDS instance first
+aws rds delete-db-instance \
+  --db-instance-identifier staging-postgres \
+  --skip-final-snapshot \
+  --region us-east-2
+
+aws rds wait db-instance-deleted \
+  --db-instance-identifier staging-postgres \
+  --region us-east-2
+
+# Delete subnet group
+aws rds delete-db-subnet-group \
+  --db-subnet-group-name staging-rds-subnet-group \
+  --region us-east-2
+
+# Remove from state and recreate
+terragrunt state rm aws_db_subnet_group.main
+terragrunt state rm aws_db_instance.main
+terragrunt apply
+```
+
+**Learning:** RDS subnet groups are VPC-bound. Recreating a VPC requires recreating the RDS subnet group and instance. This is a destructive operation — in production, plan VPC CIDR blocks carefully before deploying any databases.
+
+---
+
+## Production vs Lab Tradeoffs
 
 | Decision | Lab | Production |
 |---|---|---|
-| NAT Gateway | Single | One per AZ for high availability |
+| NAT Gateway | Single (cost) | One per AZ (HA) |
 | RDS | Single instance | Multi-AZ with automated failover |
-| RDS credentials | tfvars / GitHub secret | AWS Secrets Manager with rotation |
-| EKS node size | t3.small | Sized to workload |
-| Canary monitoring | 60 second wait | Datadog / Prometheus metrics-based promotion |
-| Alerting | SNS → Email | SNS → PagerDuty |
-| Image scanning | ECR basic scanning | Snyk or Prisma Cloud |
-| Secrets in pods | Environment variables | AWS Secrets Manager + External Secrets Operator |
-| Terraform modules | Local | Internal module registry with versioning |
+| RDS credentials | GitHub secret | AWS Secrets Manager with auto-rotation |
+| EKS auth mode | API_AND_CONFIG_MAP | API only (more secure) |
+| Canary monitoring | 60s pod readiness wait | Prometheus/Datadog error rate + latency |
+| Alerting | SNS → Email | SNS → PagerDuty + Slack |
+| Terraform modules | Local source | Internal registry with semantic versioning |
+| Bootstrap | Manual local apply | Dedicated bootstrap pipeline with approval |
+| ECR scope | Shared account-level | Separate AWS account per environment |
+| Node size | t3.small | Sized to actual workload with Karpenter |
 
 ---
 
 ## Author
 
-Built by Yomi — Platform Engineer / SRE  
-[github.com/yourmesumtin](https://github.com/yourmesumtin)
+Built by Yomi — Platform Engineer / SRE
