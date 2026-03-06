@@ -25,6 +25,18 @@ dependency "ecr" {
   mock_outputs_allowed_terraform_commands = ["init","plan", "validate"]
 }
 
+dependency "vpc" {
+  config_path  = "../vpc"
+  skip_outputs = true
+
+  mock_outputs = {
+    vpc_id             = "vpc-00000000"
+    private_subnet_ids = ["subnet-00000000", "subnet-11111111"]
+    public_subnet_ids  = ["subnet-22222222", "subnet-33333333"]
+  }
+  mock_outputs_allowed_terraform_commands = ["init", "plan", "validate", "destroy"]
+}
+
 inputs = {
   env                 = "staging"
   github_org           = "yourmesumtin"
