@@ -96,13 +96,6 @@ platform-modernization-lab/
 ├── requirements.txt
 └── Dockerfile
 ```
-
----
-
-## Why Modules Were Written From Scratch
-
-The community VPC Terraform module has 600+ lines supporting 50+ variables. This platform needs 2 public subnets, 2 private subnets, and a NAT gateway. Writing modules directly means every line is understood and explainable in a review — which is the entire point of a platform engineering assessment.
-
 ---
 
 ## Terragrunt Design
