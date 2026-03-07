@@ -4,6 +4,9 @@ A production-grade cloud platform built with Terraform, Terragrunt, AWS, Kuberne
 
 ---
 
+<img width="6324" height="3764" alt="image" src="https://github.com/user-attachments/assets/3210fef0-5a4c-400a-816d-674be9fafa59" />
+
+
 ## What This Project Demonstrates
 
 This is not a tutorial project. Every decision made here reflects real-world platform engineering thinking: what to build, what not to build, when to use existing tooling, and when to write your own. The goal is a fully observable, automated, secure platform that can onboard a new microservice in minutes.
